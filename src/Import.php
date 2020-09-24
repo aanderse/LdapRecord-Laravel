@@ -466,24 +466,33 @@ class Import
 
         $domain = $ldap->getConnectionName() ?? config('ldap.default');
 
-        $guids = $this->imported->pluck($db->getLdapGuidColumn())->toArray();
-
-        // Here we'll soft-delete all users whom have a 'guid' present
-        // but are missing from our imported guid array and are from
-        // our LDAP domain that has just been imported. This ensures
-        // the deleted users are the ones from the same domain.
-        $deleted = $db->newQuery()
+        $importedGuids = $this->imported->pluck($db->getLdapGuidColumn());
+        $existingGuids = $db->newQuery()
             ->whereNotNull($db->getLdapGuidColumn())
             ->where($db->getLdapDomainColumn(), '=', $domain)
-            ->whereNotIn($db->getLdapGuidColumn(), $guids)
-            ->update([$db->getDeletedAtColumn() => $deletedAt = now()]);
+            ->pluck($db->getLdapGuidColumn());
 
-        if (! $deleted) {
-            $this->callEventCallbacks(
-                'deleted.missing', [$db, $ldap, $db->newCollection()]
-            );
+        $toDelete = $existingGuids->diff($importedGuids);
 
-            return;
+        if ($toDelete->isNotEmpty()) {
+            // Here we'll soft-delete all users whom have a 'guid' present
+            // but are missing from our imported guid array and are from
+            // our LDAP domain that has just been imported. This ensures
+            // the deleted users are the ones from the same domain.
+            $deleted = $db->newQuery()
+                ->whereNotNull($db->getLdapGuidColumn())
+                ->where($db->getLdapDomainColumn(), '=', $domain)
+                ->whereIn($db->getLdapGuidColumn(), $existingGuids->diff($importedGuids)->toArray())
+                ->update([$db->getDeletedAtColumn() => $deletedAt = now()]);
+
+            if (!$deleted) {
+                $this->callEventCallbacks(
+                    'deleted.missing',
+                    [$db, $ldap, $db->newCollection()]
+                );
+
+                return;
+            }
         }
 
         // Next, we will retrieve the ID's of all users who
